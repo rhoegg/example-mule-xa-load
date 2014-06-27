@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:jdbc-ee="http://www.mulesoft.org/schema/mule/ee/jdbc"
+	xmlns:jms="http://www.mulesoft.org/schema/mule/jms"
+	xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:spring="http://www.springframework.org/schema/beans" version="EE-3.5.0"
+	xmlns:context="http://www.springframework.org/schema/context"
+	xmlns:p="http://www.springframework.org/schema/p"
+    xmlns:xa="http://www.mulesoft.org/schema/mule/jbossts"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="
+http://www.mulesoft.org/schema/mule/ee/jdbc http://www.mulesoft.org/schema/mule/ee/jdbc/current/mule-jdbc-ee.xsd 
+http://www.mulesoft.org/schema/mule/jms http://www.mulesoft.org/schema/mule/jms/current/mule-jms.xsd 
+http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans-current.xsd
+http://www.springframework.org/schema/context http://www.springframework.org/schema/context/spring-context-current.xsd
+http://www.mulesoft.org/schema/mule/jbossts http://www.mulesoft.org/schema/mule/jbossts/current/mule-jbossts.xsd
+http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd">
+    <context:property-placeholder location="classpath:config.properties" />
+    
+    <spring:beans>
+		<spring:bean id="amqRedeliveryPolicy" class="org.apache.activemq.RedeliveryPolicy"
+			p:maximumRedeliveries="8"
+			p:initialRedeliveryDelay="2000" />
+			
+	    <spring:bean id="amqConnectionFactory" class="org.apache.activemq.ActiveMQXAConnectionFactory"
+	    	p:brokerURL="${activemq.broker.url}">
+	        <spring:property name="redeliveryPolicy" ref="amqRedeliveryPolicy" />
+	    </spring:bean>
+	    <spring:bean id="esbXaDataSource" class="org.enhydra.jdbc.standard.StandardXADataSource" destroy-method="shutdown"
+	    	p:driverName="${db.driver}"
+	    	p:url="${db.url}"
+	    	p:user="${db.user}"
+	    	p:password="${db.password}"
+	        >
+        </spring:bean>
+    </spring:beans>
+    
+    <xa:transaction-manager doc:name="XA Transaction Manager" />
+
+    <jms:activemq-xa-connector name="activeMQConnector"
+                               dynamicNotification="true"
+                               specification="1.1"
+                               persistentDelivery="true"
+                               maxRedelivery="-1"
+                               connectionFactory-ref="amqConnectionFactory">
+        <reconnect frequency="5000" count="4" blocking="false"/>
+    </jms:activemq-xa-connector>
+    
+    
+    <jdbc-ee:connector name="databaseConnector" 
+    	dataSource-ref="esbXaDataSource" 
+    	validateConnections="true" 
+    	queryTimeout="-1" 
+    	pollingFrequency="1000"
+		doc:name="XA Database Connector">
+
+        <jdbc-ee:query key="TheStoredProcedure" value="CALL theproc(#[message.id;string;in],
+                                                        #[app.name;string;in],
+                                                        #[message.payload;string;in]
+                                                        );"/>
+    </jdbc-ee:connector>
+    
+    <flow name="xaLoadTestFlow">
+    	<jms:inbound-endpoint queue="input">
+    		<xa-transaction action="ALWAYS_BEGIN" />
+    	</jms:inbound-endpoint>
+     	<jdbc-ee:outbound-endpoint queryKey="TheStoredProcedure" exchange-pattern="request-response" connector-ref="databaseConnector">
+    		<xa-transaction action="ALWAYS_JOIN" />
+    	</jdbc-ee:outbound-endpoint>
+    	<jms:outbound-endpoint queue="output">
+    		<xa-transaction action="ALWAYS_JOIN" />
+    	</jms:outbound-endpoint>
+    </flow>
+    
+</mule>
